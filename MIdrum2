@@ -1,0 +1,471 @@
+#include <MIDI.h>
+// http://arduinomidilib.sourceforge.net/
+
+// #include "grids_resouces" don't forget this other file in the same directory as this one
+
+/* 
+MIdrum: a Generative midi drum machine
+--------------------------------------------------------------------------------------------------
+Author
+
+2013-2014 
+Geert @ http://Goltstein.nl
+--------------------------------------------------------------------------------------------------
+License
+
+http://creativecommons.org/licenses/by-sa/3.0/
+--------------------------------------------------------------------------------------------------
+History and Attribution
+
+This Generative midi drum machine started out derived from / heavily based on Mutable Instrument's Anushri.
+This version uses code, not from Anushri, but from Grids by Mutable Instruments.
+https://github.com/pichenettes/eurorack/tree/master/grids
+These pieces of code are all neatly copied-and-pasted into grids-resources (the other file). 
+Thank you very much Olivier Gillet!
+http://mutable-instruments.net/
+
+--------------------------------------------------------------------------------------------------
+*/
+
+// PINOUTS according to the hardware version of K
+// Led Outputs
+#define LedBar 5  //1 Led each Bar (Red halve of dual color led)
+#define LedBeat 4 //1 Led each beat (Green halve of dual color led)
+// MUX pins Out for the 4067
+#define S3Pin 6   // 1000
+#define S2Pin 7   // 0100
+#define S1Pin 8   // 0010
+#define S0Pin 9   // 0001
+// Inputs - Digital
+#define TapPin 2    // int 0
+#define PanicPin 3  // int 1
+// Inputs - Digital
+#define PlayPin 11
+#define StopPin 10
+// Inputs Analog
+#define CD4067Pin A0   //  8 pots and 8 faders
+//clockwise: starting [0] rightmost fader, rightmost pot is last [15]
+#define DipPin A4
+#define ChannelPin A5
+
+// AnalogRead
+int Faders[8];
+int Pots[8];
+int channel; 
+int dips;
+
+// Drums: these midi note numbers are optimized for use with a mc505
+int DrumNotes[3][8] = {
+                        {35, 36, 41, 43, 45, 47, 48, 95}, // BD
+                        {37, 38, 39, 40, 49, 50, 51, 52}, // SD
+                        {42, 44, 46, 54, 56, 58, 66, 68}  // HH
+                      };
+int DrumDens[3];      // at each step the density is calculated for each drum
+int DrumThreshold[3]; // the threshold for each drum set by the (odd) faders and (odd) pots
+int DrumNote[3];      // currently selected midi note number for each drum : using every second pot
+int DrumVel[3];       // currently calculated / scaled velocity for each drum
+boolean DrumGate[3];  // flag: did a drum play ?
+int drum;             // drum counter (0-2)
+
+
+// Time & Sequencer
+volatile unsigned long LastTapTime = 0;       // actual time of last Tap MICROseconds
+volatile unsigned  long TapTimerTotal = 0;    // sum of time between taps in a row MICROseconds
+volatile unsigned  long Tapi = 0;             // nr. of taps in a row
+volatile unsigned  long Taps = 4;             // calculate average after nr Taps
+volatile unsigned  long newTapTime = 1000000; // new average time BETWEEN Taps MICROseconds
+volatile unsigned  long TapTime = 500000;     // current average time BETWEEN Taps MICROseconds
+volatile boolean TapTimeSet = false;          // new taptime calculated?
+volatile unsigned  long PulseT = 10000;       // time between pulses in MICROseconds
+volatile unsigned  long currentMicroS;        // current time in microsec to derive pulsetime
+volatile unsigned  long previousMicroS = 0;   // previous time in microsec to derive pulsetime
+unsigned  long extClockCurrentMicroS = 0;  
+unsigned  long extClockPrevMicroS = 0;
+unsigned  long extHalfClock = 0;              // calculated time
+
+// Control and Sequencer
+boolean PlayButton = false;
+boolean StopButton = false;
+boolean Running = false;
+boolean extClock = false;
+boolean extClockDoubled = true;
+boolean MidiClock = false;
+boolean MidiNotes = true;
+boolean MidiSyncOut = true;
+boolean MidiSyncInt = true;
+
+// Sequencer counting
+int PpQn = 48;  // Pulse per Quarter note
+int PulseNr = 48;
+
+int extClockNr = 0;
+int PulseCount = 1;
+int StepCount = 1;
+int stepNr = 0;
+int stepMax = 32; // 1 loop = 32 x 32ths = 1 bar
+int Bar = 0;
+int Beat = 0;
+int Beats_Bar = 4; // 4 x 4th
+boolean BarBeatLed = true;
+
+// Realtime Groove adjustment
+int Groove;
+int PulseStep[11][8]={  // PulseStep [Groove],[ 8 x 32th per beat ]
+      {0, 8, 16, 20, 24, 28, 32, 40}, // 0, 2, 4, 2, 0, -2, -4, -2  =100% 16T
+      
+      {0, 8, 15, 20, 24, 28, 33, 40}, // 0, 2, 3, 2, 0, -2, -3, -2  =~75% 16T
+      {0, 7, 15, 19, 24, 29, 33, 41}, // 0, 1, 3, 1, 0, -1, -3, -1  =~60% 16T
+      
+      {0, 7, 14, 19, 24, 29, 34, 41}, // 0, 1, 2, 1, 0, -1, -2, -1  = 50% 16T
+      {0, 6, 13, 18, 24, 30, 35, 42}, // 0, 0, 1, 0, 0,  0, -1,  0  =~20% 16T
+      
+      {0, 6, 12, 18, 24, 30, 36, 42}, //                            =100% straight
+
+      {0, 6, 13, 19, 26, 31, 37, 42}, // 0, 0, 1, 1, 2, +1, +1,  0  =~22% 8T
+      {0, 6, 13, 20, 27, 32, 37, 42}, // 0, 0, 1, 2, 3, +2, +1,  0  =~33% 8T
+      {0, 7, 14, 21, 28, 33, 38, 43}, // 0, 1, 2, 3, 4, +3, +2, +1  = 50% 8T
+
+      {0, 7, 15, 22, 30, 34, 39, 43}, // 0, 1, 3, 4, 6, +4, +3, +1  =~70% 8T
+
+      {0, 8, 16, 24, 32, 36, 40, 44}  // 0, 2, 4, 6, 8, +6, +4, +2  =100% 8T
+  };
+/*
+The MIdrum has runs at 48 Pulses per Quarter Note.
+So that's a 32nd note every 6 pulses, on average.
+*/
+//
+void setup() {
+  // LED
+  pinMode(LedBar, OUTPUT);
+  pinMode(LedBeat, OUTPUT);
+  pinMode(13, OUTPUT); // 
+  digitalWrite(13, HIGH);
+  // MIDI
+  Serial.begin(31250);           //
+  MIDI.begin(MIDI_CHANNEL_OMNI); 
+  // MUX Control
+  pinMode(S3Pin, OUTPUT);         // 1000
+  pinMode(S2Pin, OUTPUT);         // 0100
+  pinMode(S1Pin, OUTPUT);         // 0010
+  pinMode(S0Pin, OUTPUT);         // 0001
+  // interrupts
+  attachInterrupt(0, tapped, RISING);
+  attachInterrupt(1, dipped, RISING);
+  dipped();                       // init Controls
+  ReadPotFad();                   // Read pots and faders
+  digitalWrite(13, LOW );
+}
+
+
+void loop()
+{
+  // Set each loop
+  currentMicroS = micros();
+  
+  // MIDI in
+  if(MIDI.read() && !MidiSyncInt){
+      switch(MIDI.getType()){
+        case Start:
+          Started();
+          break;
+        case Continue:
+          Started(); // continue = start [for now]
+          break;
+        case Stop:
+          Stopped();
+          break;
+        case Clock:
+          extClock = true;
+          extClockCurrentMicroS = currentMicroS;
+          extClockNr ++; 
+          break;  
+      }
+  }
+  
+  //Local MIDI sync control
+  PlayButton = digitalRead(PlayPin);
+  StopButton = digitalRead(StopPin);
+  
+  if (PlayButton && MidiSyncInt){    // whenever the playbutton is pressed and sync is internal
+    if (!Running){                   // and MIdrum isn't running already
+      Started();                     // fire up the engine
+      if (MidiSyncOut){              // and if dipswitch 3 is ON
+        MIDI.sendRealTime (Start);   // send a midi start message
+      }
+    }
+                                     // (whenever the playbutton is pressed and sync is internal)
+    if (Running && TapTimeSet){      // when MIdrum is already running
+      TapTime = newTapTime;          // implement the newly set Taptime
+      PulseT = TapTime / PpQn;       // Calculate the new time between pulses (MICROseconds)
+      TapTimeSet = false;            // init
+      Tapi = 0;
+    }
+  }
+ 
+  if (StopButton && MidiSyncInt){    // whenever the stopbutton is pressed and sync is internal
+    Stopped();                       // shut down the engine
+    if (MidiSyncOut){                // and if dipswitch 3 is ON
+      MIDI.sendRealTime (Stop);      // send a midi stop message
+    }
+  }
+
+// SEQUENCER PULSE 
+// this is the last bit of the main loop     
+// Here it is decided if and when the sequencer can advance one pulse
+
+// INTERNAL
+    if (Running && MidiSyncInt){                     // Is the engine running ? dipswitch 4 is ON ?
+      if (currentMicroS - previousMicroS > PulseT){  // Has the calcuclated time between pulses already elapsed?
+        previousMicroS = currentMicroS;              // reset 
+        Pulse ();                                    // >>> GO!
+      }
+    }
+// EXTERNAL    
+    if (Running && !MidiSyncInt && extClock){        // Is the engine running ? dipswitch 4 is OFF ? has an external midi clock been received?
+    
+        if (extClockNr == 1){                        // after the first external Clock tick (MIDI Clock is always 24PpQn)
+          PulseCount = 2;                            // pulse-increment: step over the second internal (48 PpQn) pulse, because it can't be calculated.
+        }
+        else {
+          PulseCount = 1;                            // pulse-increment: normal, so 2 internal pulses for every midi clock
+          extClockDoubled = false;                   // check
+          extHalfClock = (extClockCurrentMicroS - extClockPrevMicroS) / 2.0; // calculate double time Midi Clock intervals
+        }
+        extClock = false;                            // reset
+        extClockPrevMicroS = extClockCurrentMicroS;  // reset
+        Pulse ();                                    // >>>> GO!
+      }
+    if (Running && !MidiSyncInt && !extClock && !extClockDoubled){ // this is setting up for the (doubled) pulse halveway between midi clocks
+        if ((currentMicroS - extClockPrevMicroS) > extHalfClock){ // double precision pulse (48PpQn) derived from MidiClock (24PpQn)
+          extClockDoubled = true;
+          Pulse();                                   // >>>> GO!
+        }
+      }
+// END SEQUENCER PULSE      
+}
+// end of main loop
+
+  void Started(){         // engine started: internal or external
+    MidiNotes = true;
+    Running = true;
+  }
+
+  void Stopped(){         // engine stopped: internal or external
+    GateOff();            // commence sending note off messages
+    // reset a bunch of variables
+    MidiNotes = false;
+    Running = false;
+    extClock = false;
+    extClockNr = 0;
+    PulseNr = PpQn;
+    stepNr = 0;
+    Bar = 0;
+    Beat = 0;
+    // switch of BarBeatLed
+    if (BarBeatLed){
+      digitalWrite(LedBar, LOW);
+      digitalWrite(LedBeat, LOW);
+    }
+  }
+  
+  void Pulse(){ // running at 48 PpQn : the purpose of this function is to update controls and decide when it's time to Step() 
+    if (PulseNr == PpQn){ // reset to zero, start of new quarter note count
+        BarBeat();        // BarBeatLed
+        PulseNr = 0;      // and therefore PulseStep[Groove][0] = 0
+        Step();           // because PulseNr = 0 and therefore PulseStep[Groove][0] = 0
+      }
+    if (MidiSyncInt && MidiSyncOut){    // dipswitch 3 is ON and dipswitch 4 is ON
+        if (PulseNr%2 == 0){            // every even PulseNr
+            MIDI.sendRealTime (Clock);  // send midi clock
+        }
+    }
+    // GROOVE : using PulseStep[Groove][s]
+    for (int s=1; s<8; s++){            // s= 0 is already covered 
+      if (PulseNr == PulseStep[Groove][s]){
+        Step();                         // >>> No more counting, it's action time! <<<
+      }
+      else if (PulseNr == 3 || PulseNr == 3+ PulseStep[Groove][s]){ // first comparison is when s = 0 || [ gatelength is fixed at 3 pulses ]
+        GateOff();                      // commence sending note off messages
+      }
+    }
+    ReadPotFad();                       // Read pots and faders
+    MIDI.sendControlChange (1 , map(Pots[6], 0, 1023, 0, 127), channel); // send ModWheel
+
+    if (PulseNr == 2){                  // nothing else happens at this time / pulse, so once every quarter note we can:
+      Groove = map(Pots[7], 0 , 1023, 0, 10); // update the Groove parameter
+    }
+
+    PulseNr = PulseNr + PulseCount;     // increment the PulseNr
+
+    if (BarBeatLed && PulseNr == 4){    // blink Red Green Led off
+    digitalWrite(LedBar, LOW);
+    digitalWrite(LedBeat, LOW);
+    }
+  }
+  
+  void Step(){                                            // action time
+    // step
+    if (MidiNotes){                                       // can I?
+      // And now: the clever bit hidden at the end of "grids_resources"
+      readMIdrumMAP(); // THANK YOU  Olivier Gillet of Mutable Instruments  !
+      // remember: BD = 0, SD = 1, HH = 2
+      // DrumDens is 255 max
+      for (drum=0; drum<3; drum++){ // for each drum
+        // Calculated Velocity based on Density and scale it based on (even) fader
+        DrumVel[drum] = int ((float(DrumDens[drum]) / 3.0 + 42.0) * float (Faders[(1+ (drum*2))]) / 800.0); // scale velocity based on second fader
+        if (DrumVel[drum] > 127){
+          DrumVel[drum] = 127;  // limit velocity
+        }
+        // Calculate Threshold
+        DrumThreshold[drum] = Faders[(drum*2)] + ( Pots[(drum*2)] * random(1,256))/256 ; // every odd fader sets the probability, every odd pot adds a scaled random amount to this
+        DrumThreshold[drum] = map(DrumThreshold[drum], 0, 1023, 255, 0);                 // map this value to convert it from a probability to a threshold
+        // Check if Density is greater than Threshold
+        if (DrumDens[drum] > DrumThreshold[drum] && DrumVel[drum] >0){                   // and make sure the Velocity is greater than 0
+          DrumNote[drum] = DrumNotes [drum][map(Pots[(drum*2)+1], 0, 1023, 0, 7)];       // Read midi note number using every second pot
+          MIDI.sendNoteOn(DrumNote[drum], DrumVel[drum], channel);                       // SEND
+          DrumGate[drum] = true;                                                         // flag: did a drum play ?
+        }
+      }
+      stepNr = stepNr + StepCount;  // increment 
+      if (stepNr == stepMax){       // end of bar
+        stepNr = 0;                 // reset
+      }
+    }
+  }
+  void GateOff(){                  // commence sending note off messages
+    for (drum=0; drum<6; drum++){
+      if (DrumGate[drum]){         // check flag
+        MIDI.sendNoteOff(DrumNote[drum], DrumVel[drum], channel);
+        DrumGate[drum] = false;    // flag: did a drum play ?
+      }
+    }
+  }
+  void BarBeat(){                   // count beats and bars and light the Red Green Led
+    Beat = Beat +1;                 // increment
+    if (BarBeatLed){                // dipswitch 1: enable / disable bar beat indicator for your non-midi-syncable-bandmate
+      if ((Beat % Beats_Bar) == 1){
+        Bar = Bar +1;
+        digitalWrite(LedBar, HIGH); // Count out loud: 1
+      }
+      else {
+        digitalWrite(LedBeat, HIGH); // Count out loud: 2, 3, 4
+      }
+    }
+  }
+  
+  void dipped(){ // this function runs at start up and when the topmost red button is pressed
+    MIDI.sendControlChange (120 , 0, channel); // All sounds off
+
+    int channelpinRead = analogRead(ChannelPin);
+    channel = Switch4bit(channelpinRead);
+    if (channel == 0){ channel = 16; }
+    
+    int dippinRead = analogRead(DipPin);
+    dips = Switch4bit(dippinRead);
+    
+    BarBeatLed = !!bitRead(dips, 0);  // dipswitch 1: enable / disable bar beat indicator for your non-midi-syncable-bandmate
+    if (!BarBeatLed){
+      digitalWrite(LedBar, LOW);
+      digitalWrite(LedBeat, LOW);
+    }
+    if (!!bitRead(dips, 1)){          // dipswitch 2 ON: enable MIDI thru
+      MIDI.turnThruOn() ;
+    } 
+    if (!bitRead(dips, 1)){           // dipswitch 2 OFF: disable MIDI thru
+      MIDI.turnThruOff() ;
+    } 
+    MidiSyncOut = !!bitRead(dips, 2); // dipswitch 3: enable / disable Start - Stop - Clock messages on MIDI out
+    MidiSyncInt = !!bitRead(dips, 3); // dipswitch 4: external / internal sync
+  }
+  
+  void tapped(){                                                       // this function runs when the lowest button is pressed
+    
+    if ((currentMicroS - LastTapTime) > 200000){                       // it's NOT just a bounce < 300 bpm
+      currentMicroS = micros();
+  
+      if ((currentMicroS - LastTapTime)  > 2000000){                   // too slow < 30bpm
+        Tapi = 1;                                                      // assume new try
+        LastTapTime = currentMicroS;
+        TapTimerTotal = 0;
+      }
+      else if (Tapi > 0 && (currentMicroS - LastTapTime)  < 2000000){  // start numbercrunching taptimes
+        TapTimerTotal = TapTimerTotal + currentMicroS - LastTapTime;   // sum
+        LastTapTime = currentMicroS;
+        Tapi = Tapi +1 ;
+        if (Tapi >3){                                                  // Tap 4
+          newTapTime = TapTimerTotal / 3;                              // divide sum
+          TapTimerTotal = 0;                                           // reset
+          Tapi = 0 ;                                                   // reset
+          TapTimeSet = true;                                           // Taptime has been set, just not implemented
+        }
+      }
+    }
+  }
+
+
+  int Switch4bit(int analogIN){ // converts the analog input 10bit log values into 4bit lineair
+    /* 4bit switch or dipswitch
+    
+    Ground+
+          |
+          1k
+          |
+          +-----+-----+-----+-----AnalogPin Arduino
+          |     |     |     |
+         [1]   [2]   [3]   [4]    (Dipswitch ON)
+          |     |     |     |
+          /     /     /     /     (<dipswitches)
+          |     |     |     |
+         10k   4k7   2k2    1k
+          |     |     |     |
+    5Volt +-----+-----+-----+
+
+          
+    +5V parallel over
+    10k 4k7 2k2 1k
+    to the 4 (ON) inputs
+    outputs serial to analog Arduino pin
+    pulldown to ground 1k
+    */
+    int output; // 
+    int j;           // count
+    int Threshold4bit [16]= {46, 135, 211, 281, 342, 387, 427, 478, 523, 548, 570, 593, 615, 632, 647, 839}; // These threshold values have been determined experimentally
+    for (j=0; j<16; j++){
+     if (analogIN < Threshold4bit[j]){ // if the analog 10bit input is greater than the threshold continue, if not
+       output = j;                     // the counter is the 4bit output
+       break;
+     }
+    }
+    return output;
+  }
+    
+  
+  void ReadPotFad(){ // Pots & Faders
+    int r0;
+    int r1;
+    int r2;
+    int r3;
+    // search the web for 'multiplexing' to understand this bit, 
+    // or read: http://playground.arduino.cc/learning/4051
+    // do notice I use a 4067 (4bit) instead of a 4051 (3bit)
+    for (int j=0; j<16; j++){
+      // convert counter into 4 seperate bits
+      r0 = bitRead(j,0);
+      r1 = bitRead(j,1);
+      r2 = bitRead(j,2);
+      r3 = bitRead(j,3);
+      // write the bits to the selector pins of the 4067
+      digitalWrite(S3Pin, r3);  //bit4
+      digitalWrite(S2Pin, r2);  //bit3
+      digitalWrite(S1Pin, r1);  //bit2
+      digitalWrite(S0Pin, r0);  //bit1
+      // read the analog pins as you go
+      // check the datasheet of a 4067 for pinout to understand the relation between counter and array-index
+      if (j<8){
+        Faders[7-j] = analogRead(CD4067Pin);   
+      }
+      else {
+        Pots[j-8] = analogRead(CD4067Pin);
+      }    
+    }
+  }
