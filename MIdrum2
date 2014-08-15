@@ -333,7 +333,7 @@ void loop()
     }
   }
   void GateOff(){                  // commence sending note off messages
-    for (drum=0; drum<6; drum++){
+    for (drum=0; drum<3; drum++){
       if (DrumGate[drum]){         // check flag
         MIDI.sendNoteOff(DrumNote[drum], DrumVel[drum], channel);
         DrumGate[drum] = false;    // flag: did a drum play ?
