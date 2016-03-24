@@ -51,8 +51,8 @@ int r3 = 0;      //value of select pin
 #define StopPin 5
 // Inputs Analog
 #define GroovePin A0
-#define LeftSPin A1
-#define RightSPin A2
+//#define LeftSPin A1
+//#define RightSPin A2
 #define YPin A3
 #define XPin A4
 #define Left4067Pin A6
@@ -64,8 +64,8 @@ int Pots[16];
 int channel; 
 int dips;
 
-int    LeftSwitch;
-int    RightSwitch;
+//int    LeftSwitch;
+//int    RightSwitch;
 int    FaderX;
 int    FaderY;
 
