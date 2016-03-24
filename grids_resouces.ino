@@ -3,6 +3,11 @@
     https://github.com/pichenettes/eurorack/tree/master/grids	
     resources.cc  and further down also: pattern_generator.cc
 */
+
+#ifndef prog_uint8_t
+#define prog_uint8_t  uint8_t
+#endif
+
 const prog_uint8_t node_0[] PROGMEM = {
      255,      0,      0,      0,      0,      0,    145,      0,
        0,      0,      0,      0,    218,      0,      0,      0,
@@ -447,11 +452,13 @@ If a coordinate (say x) has a range of 8-bit, x >> 6 will give you the zone inde
 // So I decided to rewrite the code into my simple speak.
 // 
 void readMIdrumMAP(){
-  // Faders[] is a 10bit value
-  unsigned int i = Faders[6] / 256;    // zone-index (2bit)
-  unsigned int j = Faders[7] / 256;
-  unsigned int xx = Faders[6] % 256;   // relative position within a zone (8bit)
-  unsigned int yy = Faders[7] % 256;
+  FaderX = analogRead(XPin);
+  FaderY = analogRead(YPin);
+  // Fader is a 10bit value
+  unsigned int i = FaderX / 256;    // zone-index (2bit)
+  unsigned int j = FaderY / 256;
+  unsigned int xx = FaderX % 256;   // relative position within a zone (8bit)
+  unsigned int yy = FaderY % 256;
   unsigned int xx_inv= 255-xx;          
   unsigned int yy_inv= 255-yy;
   // retrieve the 4 nodes surrounding the selected zone
