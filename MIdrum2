@@ -342,8 +342,8 @@ void loop()
       }
     }
     ReadPotFad();                       // Read pots and faders
-    LeftSwitch = analogRead(LeftSPin);
-    RightSwitch = analogRead(RightSPin);
+  //  LeftSwitch = analogRead(LeftSPin);
+  //  RightSwitch = analogRead(RightSPin);
 
 
     if (PulseNr == 2){                  // nothing else happens at this time / pulse, so once every quarter note we can:
